@@ -36,6 +36,7 @@ jobs:
           node fpl.js
           mkdir site
           cp dashboard.html site/index.html
+          cp apple-touch-icon.png site/   # the home-screen icon
 
       - uses: actions/configure-pages@v5
 

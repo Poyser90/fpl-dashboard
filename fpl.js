@@ -1298,6 +1298,8 @@ ul.how{margin:6px 0;padding-left:20px}footer{font-size:13px;line-height:1.6;colo
 
   return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<title>FPL GW' + ctx.next.id + ' · ' + esc(e.name) + '</title>' +
+    // Home-screen icon (apple-touch-icon.png sits next to the page) and the name shown under it.
+    '<link rel="apple-touch-icon" href="apple-touch-icon.png"><link rel="icon" href="apple-touch-icon.png"><meta name="apple-mobile-web-app-title" content="FPL"><meta name="theme-color" content="#0B1F4D">' +
     '<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">' +
     '<style>' + css + '</style></head><body>' +
     '<input type="radio" name="tab" id="t-week" class="tabs-in" checked><input type="radio" name="tab" id="t-fix" class="tabs-in"><input type="radio" name="tab" id="t-how" class="tabs-in">' +

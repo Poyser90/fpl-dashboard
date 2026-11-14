@@ -1,0 +1,4 @@
+# Never upload these: your odds key, and files each run makes.
+key.txt
+odds-cache.json
+dashboard.html

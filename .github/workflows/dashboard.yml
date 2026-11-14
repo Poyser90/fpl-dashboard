@@ -1,0 +1,47 @@
+# Builds the FPL dashboard and publishes it to this repository's web page.
+# It only runs when you press "Run workflow" (on the Actions tab, or in the
+# GitHub app on your phone). There is no schedule, so no odds credits are
+# used unless you ask for a run.
+name: Build FPL dashboard
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the dashboard
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}   # the hidden setting; never shown in logs
+        run: |
+          node fpl.js
+          mkdir site
+          cp dashboard.html site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

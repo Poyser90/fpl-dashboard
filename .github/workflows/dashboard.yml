@@ -6,6 +6,11 @@ name: Build FPL dashboard
 
 on:
   workflow_dispatch:
+    inputs:
+      fresh_odds:
+        description: 'Fetch fresh odds (ignore 6-hour cache)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,6 +34,17 @@ jobs:
         with:
           node-version: 22
 
+      # Reuse odds-cache.json across runs; fpl.js checks the 6-hour limit and gameweek.
+      # Skipped if you ticked "Fetch fresh odds" when starting the workflow.
+      - name: Restore cached odds
+        if: ${{ !inputs.fresh_odds }}
+        uses: actions/cache/restore@v4
+        with:
+          path: odds-cache.json
+          key: odds-cache-${{ github.run_id }}
+          restore-keys: |
+            odds-cache-
+
       - name: Build the dashboard
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}   # the hidden setting; never shown in logs
@@ -37,6 +53,13 @@ jobs:
           mkdir site
           cp dashboard.html site/index.html
           cp apple-touch-icon.png site/   # the home-screen icon
+
+      - name: Save cached odds
+        if: ${{ hashFiles('odds-cache.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: odds-cache.json
+          key: odds-cache-${{ github.run_id }}
 
       - uses: actions/configure-pages@v5
 

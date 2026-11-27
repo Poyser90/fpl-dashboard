@@ -81,15 +81,23 @@ better is assumed to clear after the next gameweek).
 half-blended with real goals, and pulled towards average while few games are played.
 FPL's own team-strength numbers are empty this season, so they are not used.
 
-**Eleven and captain**: the best legal formation by next-gameweek projection; the
-captain is the highest projection.
+**Eleven and captain**: the best legal formation by next-gameweek projection. Captain,
+vice and the "close behind" list are ranked by an upside-weighted score: floor points
+(appearance, clean sheet, goals conceded, saves, defensive contributions and cards) count
+at face value, while goals, assists and bonus are multiplied by `captain.upsideWeight`
+(1.25 by default) so high-ceiling attackers beat floor-heavy defenders on a similar
+average. Displayed projections stay plain expected points.
 
 **Transfers**: every one- and two-player swap you can afford is scored by the change in
-whole-squad value over the next 5 gameweeks: starters + captain's extra + bench players
-at 0.3 of a starter. Buys must play 60+ minutes at least 65% of the time, have a 75%
-chance of playing and at least 3 matches this season, so a non-playing budget filler can
-never be suggested. A move is only recommended if it gains 1.5 points or more; otherwise
-the advice is to save the transfer. Extra transfers beyond your free ones cost 4 points.
+whole-squad value over the next 5 gameweeks (starters + captain's extra + bench players
+at 0.3 of a starter) plus a small credit for extra bank freed (`transfers.moneyValue`, 0.5
+points per £1m by default, capped at `transfers.moneyValueCap` = £3.0m so hoarding cash
+can't win). A transfer is never recommended purely to free cash: the player-projection
+part alone must be at least `transfers.minPlayerGain` (-0.5 points by default). Buys must
+play 60+ minutes at least 65% of the time, have a 75% chance of playing and at least 3
+matches this season, so a non-playing budget filler can never be suggested. A move is
+only recommended if it gains 1.5 points or more; otherwise the advice is to save the
+transfer. Extra transfers beyond your free ones cost 4 points.
 
 ## The page
 
@@ -189,8 +197,12 @@ the top of the page update too, so you can see whether a change helped.
 | `teams.homeAdvantage` | 1.1 = home teams 10% better |
 | `teams.fixtureStrength` | 0 ignores who the opponent is, 1 takes it at face value |
 | `bench.outfieldWeight` | how much bench quality matters. Raise for a stronger bench, 0.1 for a typical approach |
+| `captain.upsideWeight` | multiplier on goals, assists and bonus when ranking captain candidates (1 = plain expected points) |
 | `transfers.minStartChance` | the "regular starter" bar for buys |
 | `transfers.minGain` | how big a gain justifies using a transfer |
+| `transfers.moneyValue` | points credited per £1m of extra bank freed over the horizon (0 = ignore bank freed) |
+| `transfers.moneyValueCap` | maximum extra £m freed that earns credit, so hoarding cash can't win |
+| `transfers.minPlayerGain` | minimum player-projection gain required so a move is never recommended purely for cash |
 | `transfers.defaultView` | which transfer view the page opens on: `ALL`, `GKP`, `DEF`, `MID`, `FWD` |
 | `odds.matchOddsWeight` | share of each team's expected goals taken from match odds (0 = off) |
 | `odds.goalscorerWeight` | share of each player's goal threat taken from goalscorer odds (0 = off) |

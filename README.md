@@ -27,9 +27,11 @@ so you don't need the laptop. It only runs when you ask:
    In Safari, Share → Add to Home Screen gives you an app-style icon for it.
 
 The odds key is kept in the repository's secrets as `ODDS_API_KEY`; it's never in the
-page or the code. Each press fetches fresh odds (about 12 credits), because the
-6-hour saved copy only applies on your laptop. The page is public to anyone who has
-the link; it only shows what FPL already makes public about your team.
+page or the code. The workflow saves `odds-cache.json` in GitHub Actions' private cache,
+so running it again within 6 hours for the same gameweek reuses the saved odds (0 extra
+credits). Tick **Fetch fresh odds** on the Run workflow screen if you ever want to ignore
+the 6-hour cache and pay for fresh odds (about 12 credits). The page is public to anyone
+who has the link; it only shows what FPL already makes public about your team.
 
 `.gitignore` stops `key.txt`, `odds-cache.json` and `dashboard.html` from ever being
 uploaded.

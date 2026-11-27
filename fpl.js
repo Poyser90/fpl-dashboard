@@ -66,12 +66,26 @@ const CONFIG = {
     keeperWeight: 0.05,
   },
 
+  captain: {
+    // Goals, assists and bonus are multiplied by this when ranking captain
+    // candidates, while floor points (minutes, clean sheets, saves, defensive
+    // contributions, cards) count at face value. Displayed projections stay
+    // plain expected points. Set to 1 to rank by plain expected points.
+    upsideWeight: 1.25,
+  },
+
   transfers: {
     minStartChance: 0.65,    // never suggest buying anyone less likely than this to play 60+ minutes
     minAvailability: 0.75,   // ...or below this chance of playing next gameweek
     minMatches: 3,           // ...or with fewer Premier League matches than this this season
     minGain: 1.5,            // a move must gain at least this many points (over the horizon) to be recommended
     hitCost: 4,              // points per transfer beyond your free ones
+    // Extra bank freed by a move earns this many points per £1m over the horizon
+    // (roughly half the ~1 pt per £1m slope among buyable players, because cash
+    // in the bank still needs a future transfer to turn into points).
+    moneyValue: 0.5,
+    moneyValueCap: 3.0,      // maximum extra £m freed that earns credit, so hoarding cash can't win
+    minPlayerGain: -0.5,     // player-projection gain must be at least this (never recommend a move purely to free cash)
     poolDepth: 3,            // candidates kept per position and price level
     alternativesShown: 8,
     defaultView: 'ALL',      // which tab the page opens on: 'ALL', 'GKP', 'DEF', 'MID' or 'FWD'
@@ -822,6 +836,18 @@ function bestEleven(squad, i) {
   return { xi: best.xi, bench, total: best.total };
 }
 
+// Upside-weighted score used to rank captain candidates.
+// Floor points (appearance, clean sheet, goals conceded, saves, defensive
+// contributions, cards) count at face value; goals, assists and bonus are
+// multiplied by captain.upsideWeight so high-ceiling attackers beat
+// floor-heavy defenders on a similar average.
+function captainScore(p, cfg) {
+  const parts = p.nextParts || {};
+  const upside = (parts.goals || 0) + (parts.assists || 0) + (parts.bonus || 0);
+  const floor = p.xNext - upside;
+  return floor + upside * cfg.captain.upsideWeight;
+}
+
 // One number for a whole 15-man squad over the horizon:
 // starters + captain's extra points + a weighted share of the bench.
 function squadValue(ctx, squad) {
@@ -859,9 +885,17 @@ function clubCounts(squad) {
 }
 
 function findTransfers(ctx, squad, pool) {
+  const t = ctx.cfg.transfers;
   const baseValue = squadValue(ctx, squad);
   const sell = (p) => ctx.prices[p.id].sell;
   const legalClubs = (newSquad) => Object.values(clubCounts(newSquad)).every((n) => n <= ctx.teamLimit);
+  // Split each move's score into player-projection gain and credit for extra bank freed (capped).
+  const scoreMove = (newSquad, left) => {
+    const playerGain = squadValue(ctx, newSquad) - baseValue;
+    const freed = Math.max(0, left - ctx.bank) / 10;   // extra £m freed compared with now
+    const moneyGain = Math.min(freed, t.moneyValueCap) * t.moneyValue;
+    return { playerGain, moneyGain, freed, gain: playerGain + moneyGain };
+  };
 
   const singles = [];
   squad.forEach((out) => pool[out.pos].forEach((inn) => {
@@ -869,9 +903,11 @@ function findTransfers(ctx, squad, pool) {
     if (left < 0) return;
     const newSquad = squad.map((p) => (p === out ? inn : p));
     if (!legalClubs(newSquad)) return;
-    singles.push({ moves: [{ out, inn }], gain: squadValue(ctx, newSquad) - baseValue, left, newSquad });
+    singles.push(Object.assign({ moves: [{ out, inn }], left, newSquad }, scoreMove(newSquad, left)));
   }));
-  singles.sort((a, b) => b.gain - a.gain);
+  // Keep moves that clear the player-projection floor ahead of cash-only downgrades.
+  const ok = (m) => (m.playerGain >= t.minPlayerGain ? 1 : 0);
+  singles.sort((a, b) => ok(b) - ok(a) || b.gain - a.gain);
 
   // Best pair overall, and the best pair that buys at least one player in each position.
   const bestPairs = { ALL: null, GKP: null, DEF: null, MID: null, FWD: null };
@@ -884,10 +920,11 @@ function findTransfers(ctx, squad, pool) {
       if (left < 0) return;
       const newSquad = squad.map((p) => (p === out1 ? in1 : p === out2 ? in2 : p));
       if (!legalClubs(newSquad)) return;
-      const gain = squadValue(ctx, newSquad) - baseValue;
+      const scored = scoreMove(newSquad, left);
+      if (scored.playerGain < t.minPlayerGain) return;
       ['ALL', in1.pos, in2.pos].forEach((key) => {
-        if (bestPairs[key] && gain <= bestPairs[key].gain) return;
-        bestPairs[key] = { moves: [{ out: out1, inn: in1 }, { out: out2, inn: in2 }], gain, left, newSquad };
+        if (bestPairs[key] && scored.gain <= bestPairs[key].gain) return;
+        bestPairs[key] = Object.assign({ moves: [{ out: out1, inn: in1 }, { out: out2, inn: in2 }], left, newSquad }, scored);
       });
     }));
   }
@@ -924,7 +961,7 @@ function analyse(ctx) {
   const pool = efficientPool(candidates, t.poolDepth);
 
   const team = bestEleven(squad, 0);
-  const order = team.xi.slice().sort((a, b) => b.xNext - a.xNext);
+  const order = team.xi.slice().sort((a, b) => captainScore(b, cfg) - captainScore(a, cfg) || b.xNext - a.xNext);
   const keeperSub = team.bench.find((p) => p.pos === 'GKP');
   const bench = [keeperSub, ...team.bench.filter((p) => p !== keeperSub)].filter(Boolean);
 
@@ -932,14 +969,18 @@ function analyse(ctx) {
   const hit = (count) => Math.max(0, count - ctx.freeTransfers) * t.hitCost;
   const describe = (plan) => plan && {
     moves: plan.moves.map((m) => ({ out: m.out, inn: m.inn, sell: ctx.prices[m.out.id].sell, why: explainMove(ctx, m, plan.newSquad) })),
-    gain: plan.gain, hit: hit(plan.moves.length), net: plan.gain - hit(plan.moves.length), left: plan.left,
+    gain: plan.gain, playerGain: plan.playerGain, moneyGain: plan.moneyGain, freed: plan.freed,
+    hit: hit(plan.moves.length), net: plan.gain - hit(plan.moves.length), left: plan.left,
   };
   // Decide what to recommend from a best single and a best pair: nothing, one move, or two.
+  // A move must also clear minPlayerGain on its own, so freeing cash alone can never trigger a recommendation.
   const atCap = ctx.freeTransfers >= ctx.cap;
   const decide = (one, two) => {
     let pick = 'roll', verdict;
-    if (one && (one.net >= t.minGain || (atCap && one.gain > 0))) pick = 'one';
-    if (two && two.net >= t.minGain && two.net >= (pick === 'one' ? one.net : 0) + t.minGain) pick = 'two';
+    const oneOk = one && one.playerGain >= t.minPlayerGain;
+    const twoOk = two && two.playerGain >= t.minPlayerGain;
+    if (oneOk && (one.net >= t.minGain || (atCap && one.gain > 0))) pick = 'one';
+    if (twoOk && two.net >= t.minGain && two.net >= (pick === 'one' ? one.net : 0) + t.minGain) pick = 'two';
     if (pick === 'roll') {
       verdict = 'No move clears the bar of +' + t.minGain + ' points, so the model would save the transfer' +
         (ctx.freeTransfers < ctx.cap ? ' and carry ' + Math.min(ctx.cap, ctx.freeTransfers + 1) + ' into the following week.' : '.');
@@ -1065,14 +1106,21 @@ function pitchCard(m, p) {
 }
 function armband(m) {
   const c = m.captain, f = c.fixtures[0] && c.fixtures[0].list[0];
+  const w = m.ctx.cfg.captain.upsideWeight;
+  const ga = (c.nextParts.goals || 0) + (c.nextParts.assists || 0);
+  const gaShare = c.xNext > 0 ? clamp(ga / c.xNext, 0, 1) : 0;
   const others = m.captainOptions.filter((p) => p !== c && p !== m.vice).slice(0, 2).map((p) => esc(p.name) + ' ' + r1(p.xNext)).join(', then ');
   let line = (f ? esc(f.opp) + (f.home ? ' at home.' : ' away.') : 'No fixture.') + ' Projected ' + r1(c.xNext) + ' before doubling';
   line += c.scorerOdds ? '; bookmakers give him ' + pct(1 - Math.exp(-c.scorerOdds.goals)) + ' to score if he plays.' : '.';
+  const rankNote = w !== 1
+    ? ' Ranked by an upside-weighted score (goals, assists &amp; bonus ×' + w + '); figures shown are plain expected points.'
+    : ' When these are this close, the model has no real opinion.';
   return '<div class="armband"><p class="kicker">The armband</p><h2>' + esc(c.name) + '</h2><p>' + line + '</p>' +
     '<div class="figs"><div><b>' + r1(c.xNext) + '</b><span>Projected</span></div>' +
+    '<div><b>' + pct(gaShare) + '</b><span>From goals &amp; assists</span></div>' +
     (c.scorerOdds ? '<div><b>' + pct(1 - Math.exp(-c.scorerOdds.goals)) + '</b><span>To score</span></div>' : '') +
     (f ? '<div><b>' + r1(f.look.goalsFor) + '–' + r1(f.look.goalsAgainst) + '</b><span>Expected goals</span></div>' : '') + '</div>' +
-    '<p class="small">Vice: ' + esc(m.vice.name) + ' ' + r1(m.vice.xNext) + (others ? ' · close behind: ' + others : '') + '. When these are this close, the model has no real opinion.</p></div>';
+    '<p class="small">Vice: ' + esc(m.vice.name) + ' ' + r1(m.vice.xNext) + (others ? ' · close behind: ' + others : '') + '.' + rankNote + '</p></div>';
 }
 function moveBlock(mv) {
   return '<div class="move"><div class="side"><span class="lab out">Out</span><span class="nm">' + esc(mv.out.name) + '</span><span class="sub">' + mv.out.club + ' ' + mv.out.pos + ' · sells ' + money(mv.sell) + '</span></div>' +
@@ -1087,16 +1135,23 @@ function transferView(m, key) {
   if (plan) {
     html += '<div class="planhead"><p class="kicker">' + (key === 'ALL' ? (plan.moves.length > 1 ? 'Transfers of the week' : 'Transfer of the week') : 'Best way to buy a ' + pos) + '</p><p class="gain">' + signed(plan.net) + ' pts</p></div>';
     html += plan.moves.map(moveBlock).join('');
-    html += '<p class="small">' + (plan.hit ? 'Includes a ' + plan.hit + '-point hit. ' : 'No hit. ') + 'Leaves ' + money(plan.left) + ' in the bank. Gain over the next ' + m.ctx.weeks.length + ' gameweeks, bench counted at ' + m.ctx.cfg.bench.outfieldWeight + '.</p>';
+    const split = 'Players ' + signed(plan.playerGain) + ', money freed ' + signed(plan.moneyGain) + (plan.freed > 0 ? ' (+£' + r1(plan.freed) + 'm extra)' : '') + '. ';
+    html += '<p class="small">' + split + (plan.hit ? 'Includes a ' + plan.hit + '-point hit. ' : 'No hit. ') + 'Leaves ' + money(plan.left) + ' in the bank. Gain over the next ' + m.ctx.weeks.length + ' gameweeks, bench counted at ' + m.ctx.cfg.bench.outfieldWeight + '.</p>';
   } else {
     html += '<div class="planhead"><p class="kicker">' + (key === 'ALL' ? 'Transfer advice' : 'Buying a ' + pos) + '</p><p class="gain">Save it</p></div><p>' + esc(v.verdict) + '</p>';
-    if (v.one) html += '<p class="small">Best single move if you want one anyway (' + signed(v.one.gain) + '):</p>' + v.one.moves.map(moveBlock).join('');
+    if (v.one) {
+      const split = 'players ' + signed(v.one.playerGain) + ', money freed ' + signed(v.one.moneyGain);
+      html += '<p class="small">Best single move if you want one anyway (' + signed(v.one.gain) + ': ' + split + '):</p>' + v.one.moves.map(moveBlock).join('');
+    }
   }
   if (key !== 'ALL' && m.views.ALL.one && v.one) html += '<p class="small">For comparison, the best single move in any position gains ' + signed(m.views.ALL.one.gain) + '.</p>';
   const alts = v.alternatives.slice(plan && plan.moves.length === 1 ? 1 : 0, 6);
   if (alts.length) {
     html += '<p class="kicker" style="margin-top:14px">' + (key === 'ALL' ? 'Other single moves' : 'Other ' + pos + ' buys') + '</p><ul class="alts">' +
-      alts.map((a) => '<li><span>' + esc(a.moves[0].out.name) + ' → <b>' + esc(a.moves[0].inn.name) + '</b> <small>' + a.moves[0].inn.club + ' · ' + money(a.moves[0].inn.cost) + '</small></span><span class="' + (a.gain >= 0 ? 'pos' : 'neg') + '">' + signed(a.gain) + '</span></li>').join('') + '</ul>';
+      alts.map((a) => {
+        const detail = a.moneyGain > 0 ? ' <small>(' + signed(a.playerGain) + ' + ' + r1(a.moneyGain) + ' cash)</small>' : '';
+        return '<li><span>' + esc(a.moves[0].out.name) + ' → <b>' + esc(a.moves[0].inn.name) + '</b> <small>' + a.moves[0].inn.club + ' · ' + money(a.moves[0].inn.cost) + '</small></span><span class="' + (a.gain >= 0 ? 'pos' : 'neg') + '">' + signed(a.gain) + detail + '</span></li>';
+      }).join('') + '</ul>';
   }
   return '<div class="view view-' + key + '">' + html + '</div>';
 }
@@ -1243,7 +1298,8 @@ main{padding:30px 0 56px}
 .lab{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}.lab.out{color:#7A2A16}.lab.in{color:#0B6E4F}
 .sub{font-size:13px;color:#4A5878}
 details{margin:6px 0 8px;font-size:14px}summary{cursor:pointer;font-weight:600;min-height:32px;display:flex;align-items:center}
-.alts{list-style:none;margin:6px 0 0;padding:0}.alts li{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #E2DCCB;font-size:14px}
+.alts{list-style:none;margin:6px 0 0;padding:0}.alts li{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid #E2DCCB;font-size:14px}
+.alts .pos,.alts .neg{text-align:right;white-space:nowrap}.alts .pos small,.alts .neg small{display:block;font-weight:400;color:#4A5878}
 .pos{color:#0B6E4F;font-weight:700}.neg{color:#8A1A0E;font-weight:700}
 .sect{display:flex;justify-content:space-between;align-items:baseline;border-bottom:4px solid #0B1F4D;padding-bottom:8px;gap:12px;flex-wrap:wrap}
 .sect h2{margin:0;font-family:Anton,Impact,sans-serif;font-weight:400;font-size:42px;text-transform:uppercase}
@@ -1347,7 +1403,8 @@ ul.how{margin:6px 0;padding-left:20px}footer{font-size:13px;line-height:1.6;colo
     '<li><b>Team strength</b>: expected goals in every match this season, ' + pct(cfg.teams.realGoalsWeight) + ' blended with real goals.</li>' +
     '<li><b>Bookmaker odds</b> (when available): match odds blended ' + pct(cfg.odds.matchOddsWeight) + ' into each team\'s expected goals; anytime goalscorer odds, margin removed, blended ' + pct(cfg.odds.goalscorerWeight) + ' into each player\'s goal threat.</li>' +
     '<li><b>Horizon</b>: gameweeks ' + ctx.weeks.map((w) => w.gw).join(', ') + ', weighted ' + ctx.weeks.map((w) => w.weight).join(', ') + '.</li>' +
-    '<li><b>Transfers</b>: every one- and two-player swap you can afford from ' + m.candidates.length + ' regular starters, scored by the change in whole-squad value (eleven + captain + bench at ' + cfg.bench.outfieldWeight + ').</li>' +
+    '<li><b>Captain</b>: candidates from your eleven are ranked by an upside-weighted score (goals, assists and bonus ×' + cfg.captain.upsideWeight + ', floor points at face value); displayed numbers stay plain expected points.</li>' +
+    '<li><b>Transfers</b>: every one- and two-player swap you can afford from ' + m.candidates.length + ' regular starters, scored by the change in whole-squad value (eleven + captain + bench at ' + cfg.bench.outfieldWeight + ') plus ' + cfg.transfers.moneyValue + ' pts per £1m of extra bank freed (capped at £' + r1(cfg.transfers.moneyValueCap) + 'm). A move is never recommended purely for cash: the player-projection part must be at least ' + signed(cfg.transfers.minPlayerGain) + ' pts.</li>' +
     '<li><b>Selling prices and free transfers</b> aren\'t in the public data: both are worked out from your transfer history.</li></ul></section></div>' +
 
     '<footer>Generated ' + when(m.generated) + ' from the official FPL data' + (Object.keys(ctx.odds.goals).length ? ' and The Odds API' : '') + '. Estimates, not forecasts.</footer></main>' +
@@ -1399,4 +1456,4 @@ async function main() {
 if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) main();
 
 // For testing only: lets a test script load these functions.
-if (typeof module !== 'undefined') module.exports = { goalsFromMatchOdds, goalsFromScorerOdds, findPlayer, sameTeam, winEdge, chanceOver };
+if (typeof module !== 'undefined') module.exports = { goalsFromMatchOdds, goalsFromScorerOdds, findPlayer, sameTeam, winEdge, chanceOver, captainScore };

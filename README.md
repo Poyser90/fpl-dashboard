@@ -105,14 +105,17 @@ Three tabs:
 
 - **This week**: the captain pick, the recommended transfers (with buttons for Best overall,
   GKP, DEF, MID and FWD, each with a "Why, and the inputs" drop-down) and your eleven on a pitch
-  with the bench.
+  with the bench. Tap **Lock in** on any transfer (or in "Compare a transfer") to update the
+  starting eleven, bench, armband and bank right in the browser without re-running the script;
+  it is remembered in your browser for the current gameweek, with a **Reset squad** button to undo.
 - **Fixtures & targets**: a heat map of your squad and the model's shortlist over the next five
   gameweeks (blue = easier, orange = harder; each cell shows the team's expected goals
   for–against). Above it, "Compare a transfer": pick anyone in your squad and any regular
   starter in the game, and it shows their fixtures side by side, the difference in their
-  projections and your bank afterwards. It warns about mismatched positions or a fourth
-  player from one club. That figure compares the two players' own projections only; the
-  recommendations on the first tab also count bench and captaincy effects.
+  projections and your bank afterwards (plus a **Lock in this transfer** button). It warns
+  about mismatched positions or a fourth player from one club. That figure compares the two
+  players' own projections only; the recommendations on the first tab also count bench and
+  captaincy effects.
 - **How it works**: the full inputs for every squad player, the track record, the odds status
   and how the numbers are made.
 

@@ -1115,7 +1115,7 @@ function armband(m) {
   const rankNote = w !== 1
     ? ' Ranked by an upside-weighted score (goals, assists &amp; bonus ×' + w + '); figures shown are plain expected points.'
     : ' When these are this close, the model has no real opinion.';
-  return '<div class="armband"><p class="kicker">The armband</p><h2>' + esc(c.name) + '</h2><p>' + line + '</p>' +
+  return '<div class="armband" id="armband-box"><p class="kicker">The armband</p><h2>' + esc(c.name) + '</h2><p>' + line + '</p>' +
     '<div class="figs"><div><b>' + r1(c.xNext) + '</b><span>Projected</span></div>' +
     '<div><b>' + pct(gaShare) + '</b><span>From goals &amp; assists</span></div>' +
     (c.scorerOdds ? '<div><b>' + pct(1 - Math.exp(-c.scorerOdds.goals)) + '</b><span>To score</span></div>' : '') +
@@ -1128,6 +1128,11 @@ function moveBlock(mv) {
     '<details><summary>Why, and the inputs</summary><p>' + esc(mv.why) + '</p><div class="scroll"><table class="mini"><tr><th>Player</th>' + INPUT_HEAD + '</tr>' +
     '<tr><td>' + esc(mv.out.name) + '</td>' + inputCells(null, mv.out) + '</tr><tr><td>' + esc(mv.inn.name) + '</td>' + inputCells(null, mv.inn) + '</tr></table></div></details>';
 }
+function lockButton(moves) {
+  const pairs = JSON.stringify(moves.map((mv) => [mv.out.id, mv.inn.id]));
+  const label = moves.length > 1 ? 'Lock in these transfers' : 'Lock in this transfer';
+  return '<button type="button" class="btn dark lock-btn" data-lock="' + esc(pairs) + '" data-label="' + label + '">' + label + '</button>';
+}
 function transferView(m, key) {
   const v = m.views[key], pos = VIEW_NAMES[key].toLowerCase();
   const plan = v.pick === 'two' ? v.two : v.pick === 'one' ? v.one : null;
@@ -1137,11 +1142,12 @@ function transferView(m, key) {
     html += plan.moves.map(moveBlock).join('');
     const split = 'Players ' + signed(plan.playerGain) + ', money freed ' + signed(plan.moneyGain) + (plan.freed > 0 ? ' (+£' + r1(plan.freed) + 'm extra)' : '') + '. ';
     html += '<p class="small">' + split + (plan.hit ? 'Includes a ' + plan.hit + '-point hit. ' : 'No hit. ') + 'Leaves ' + money(plan.left) + ' in the bank. Gain over the next ' + m.ctx.weeks.length + ' gameweeks, bench counted at ' + m.ctx.cfg.bench.outfieldWeight + '.</p>';
+    html += lockButton(plan.moves);
   } else {
     html += '<div class="planhead"><p class="kicker">' + (key === 'ALL' ? 'Transfer advice' : 'Buying a ' + pos) + '</p><p class="gain">Save it</p></div><p>' + esc(v.verdict) + '</p>';
     if (v.one) {
       const split = 'players ' + signed(v.one.playerGain) + ', money freed ' + signed(v.one.moneyGain);
-      html += '<p class="small">Best single move if you want one anyway (' + signed(v.one.gain) + ': ' + split + '):</p>' + v.one.moves.map(moveBlock).join('');
+      html += '<p class="small">Best single move if you want one anyway (' + signed(v.one.gain) + ': ' + split + '):</p>' + v.one.moves.map(moveBlock).join('') + lockButton(v.one.moves);
     }
   }
   if (key !== 'ALL' && m.views.ALL.one && v.one) html += '<p class="small">For comparison, the best single move in any position gains ' + signed(m.views.ALL.one.gain) + '.</p>';
@@ -1166,29 +1172,171 @@ function gridRow(m, p, kind) {
   return '<tr><td class="who"><b>' + esc(p.name) + '</b> <small>' + p.pos + ' · ' + p.club + price + '</small> <span class="role">' + role + '</span></td>' +
     gridCells(p) + '<td class="num strong">' + r1(p.xNext) + '</td><td class="num">' + r1(p.xHorizon) + '</td><td>' + button + '</td></tr>';
 }
-// Everything the comparison needs, for your squad and every regular starter who could be bought.
+// Everything the comparison and transfer lock-in need, for your squad and every regular starter who could be bought.
 function compareData(m) {
   const ctx = m.ctx;
-  const pack = (p, inSquad) => ({
-    id: p.id, name: p.name, pos: p.pos, club: p.club, team: p.team, squad: inSquad,
-    cost: p.cost, sell: inSquad ? ctx.prices[p.id].sell : p.cost,
-    next: r1(p.xNext), horizon: Math.round(p.xHorizon * 10) / 10, weeks: fixtureWeeks(p).map((w) => w.list.map((x) => ({ t: x.t, g: x.g, bg: x.bg, fg: x.fg }))),
-  });
+  const pack = (p, inSquad) => {
+    const f = p.fixtures[0] && p.fixtures[0].list[0];
+    const ga = (p.nextParts.goals || 0) + (p.nextParts.assists || 0);
+    return {
+      id: p.id, name: p.name, pos: p.pos, club: p.club, team: p.team, squad: inSquad,
+      cost: p.cost, sell: inSquad ? ctx.prices[p.id].sell : p.cost,
+      xNext: p.xNext, capScore: captainScore(p, ctx.cfg),
+      gaShare: p.xNext > 0 ? clamp(ga / p.xNext, 0, 1) : 0,
+      avail: p.avail, nextOpp: nextOpp(p),
+      nextFx: f ? { opp: f.opp, home: f.home, goals: r1(f.look.goalsFor) + '–' + r1(f.look.goalsAgainst) } : null,
+      scorerPct: p.scorerOdds ? pct(1 - Math.exp(-p.scorerOdds.goals)) : null,
+      next: r1(p.xNext), horizon: Math.round(p.xHorizon * 10) / 10,
+      weeks: fixtureWeeks(p).map((w) => w.list.map((x) => ({ t: x.t, g: x.g, bg: x.bg, fg: x.fg }))),
+    };
+  };
   const best = m.views.ALL.one;   // the best single move: affordable on its own
   return {
+    teamId: ctx.entry.id, gw: ctx.next.id, upsideWeight: ctx.cfg.captain.upsideWeight,
     bank: ctx.bank, teamLimit: ctx.teamLimit, gws: ctx.weeks.map((w) => w.gw),
+    squadIds: m.squad.map((p) => p.id),
     players: m.squad.map((p) => pack(p, true)).concat(m.candidates.map((p) => pack(p, false))),
     start: best ? { out: best.moves[0].out.id, inn: best.moves[0].inn.id } : null,
   };
 }
-// Small script for the comparison panel. Plain JavaScript, runs in the browser.
+// Plain JavaScript for the comparison panel and locking in transfers in the browser.
+// Locking in a transfer updates the starting eleven, bench, armband and bank
+// right on the page without needing to re-run the script or spend odds credits.
 const COMPARE_SCRIPT = `
 (function () {
   var D = JSON.parse(document.getElementById('fpl-data').textContent);
   var byId = {}; D.players.forEach(function (p) { byId[p.id] = p; });
   var outSel = document.getElementById('cmp-out'), inSel = document.getElementById('cmp-in');
+  var lockCmpBtn = document.getElementById('cmp-lock');
+  var storageKey = 'fpl_locked_' + D.teamId + '_' + D.gw;
+  var locked = [];
+  try {
+    var saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+    if (Array.isArray(saved)) locked = saved.filter(function (x) { return Array.isArray(x) && x.length === 2; });
+  } catch (e) { locked = []; }
+
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function money(t) { return '£' + (t / 10).toFixed(1) + 'm'; }
+  function r1(x) { return (Math.round(x * 10) / 10).toFixed(1); }
+  function pct(x) { return Math.round(x * 100) + '%'; }
+  function saveLocked() {
+    try {
+      if (locked.length) localStorage.setItem(storageKey, JSON.stringify(locked));
+      else localStorage.removeItem(storageKey);
+    } catch (e) { /* private browsing */ }
+  }
+
+  // Apply locked-in [outId, inId] pairs to the original 15-man squad and bank.
+  function activeState() {
+    var ids = D.squadIds.slice(), bank = D.bank, applied = [];
+    locked.forEach(function (pair) {
+      var outId = Number(pair[0]), inId = Number(pair[1]);
+      var idx = ids.indexOf(outId), o = byId[outId], inn = byId[inId];
+      if (idx === -1 || !o || !inn || ids.indexOf(inId) !== -1 || o.pos !== inn.pos) return;
+      ids[idx] = inId;
+      bank += o.sell - inn.cost;
+      applied.push([outId, inId]);
+    });
+    return { ids: ids, squad: ids.map(function (id) { return byId[id]; }), bank: bank, applied: applied };
+  }
+
+  // Best legal eleven for next gameweek: 1 GKP, 3-5 DEF, 2-5 MID, 1-3 FWD.
+  function bestEleven(squad) {
+    var by = { GKP: [], DEF: [], MID: [], FWD: [] };
+    squad.forEach(function (p) { by[p.pos].push(p); });
+    Object.keys(by).forEach(function (k) { by[k].sort(function (a, b) { return b.xNext - a.xNext; }); });
+    var best = null;
+    for (var d = 3; d <= 5; d++) for (var m = 2; m <= 5; m++) {
+      var f = 10 - d - m;
+      if (f < 1 || f > 3) continue;
+      var xi = [by.GKP[0]].concat(by.DEF.slice(0, d), by.MID.slice(0, m), by.FWD.slice(0, f));
+      var total = xi.reduce(function (a, p) { return a + p.xNext; }, 0);
+      if (!best || total > best.total) best = { xi: xi, total: total };
+    }
+    var benchAll = squad.filter(function (p) { return best.xi.indexOf(p) === -1; }).sort(function (a, b) { return b.xNext - a.xNext; });
+    var gk = benchAll.find(function (p) { return p.pos === 'GKP'; });
+    var bench = (gk ? [gk] : []).concat(benchAll.filter(function (p) { return p !== gk; }));
+    return { xi: best.xi, bench: bench };
+  }
+
+  function renderArmband(order) {
+    var c = order[0], v = order[1], f = c.nextFx;
+    var others = order.slice(2, 4).map(function (p) { return esc(p.name) + ' ' + r1(p.xNext); }).join(', then ');
+    var line = (f ? esc(f.opp) + (f.home ? ' at home.' : ' away.') : 'No fixture.') + ' Projected ' + r1(c.xNext) + ' before doubling';
+    line += c.scorerPct ? '; bookmakers give him ' + c.scorerPct + ' to score if he plays.' : '.';
+    var rankNote = D.upsideWeight !== 1
+      ? ' Ranked by an upside-weighted score (goals, assists &amp; bonus ×' + D.upsideWeight + '); figures shown are plain expected points.'
+      : ' When these are this close, the model has no real opinion.';
+    document.getElementById('armband-box').innerHTML =
+      '<p class="kicker">The armband</p><h2>' + esc(c.name) + '</h2><p>' + line + '</p>' +
+      '<div class="figs"><div><b>' + r1(c.xNext) + '</b><span>Projected</span></div>' +
+      '<div><b>' + pct(c.gaShare) + '</b><span>From goals &amp; assists</span></div>' +
+      (c.scorerPct ? '<div><b>' + c.scorerPct + '</b><span>To score</span></div>' : '') +
+      (f ? '<div><b>' + f.goals + '</b><span>Expected goals</span></div>' : '') + '</div>' +
+      '<p class="small">Vice: ' + esc(v.name) + ' ' + r1(v.xNext) + (others ? ' · close behind: ' + others : '') + '.' + rankNote + '</p>';
+  }
+
+  function renderPitch(team, cap, vice) {
+    var form = ['DEF', 'MID', 'FWD'].map(function (pos) { return team.xi.filter(function (p) { return p.pos === pos; }).length; }).join('-');
+    document.getElementById('sheet-head').textContent = 'Team sheet · ' + form;
+    function card(p) {
+      var badge = p === cap ? '<span class="badge">C</span>' : p === vice ? '<span class="badge">V</span>' : '';
+      var flag = p.avail < 1 ? '<span class="doubt">' + pct(p.avail) + ' fit</span>' : '';
+      return '<div class="card">' + badge + '<span class="pn">' + esc(p.name) + '</span><span class="po">' + esc(p.nextOpp) + '</span><span class="px">' + r1(p.xNext) + '</span>' + flag + '</div>';
+    }
+    function line(pos) { return '<div class="line">' + team.xi.filter(function (p) { return p.pos === pos; }).map(card).join('') + '</div>'; }
+    var benchHtml = team.bench.map(function (p, i) {
+      return '<div class="bp"><small>' + (p.pos === 'GKP' ? 'GK' : i) + '</small> <b>' + esc(p.name) + '</b>' +
+        (p.avail < 1 ? ' <small class="doubtb">' + pct(p.avail) + ' fit</small>' : '') + ' <span>' + r1(p.xNext) + '</span></div>';
+    }).join('');
+    document.getElementById('pitch-box').innerHTML = line('FWD') + line('MID') + line('DEF') + line('GKP') + '<div class="benchrow-p"><span class="lbl">Bench</span>' + benchHtml + '</div>';
+  }
+
+  // Refresh the "Swap out" dropdown in Compare a transfer so it always reflects the active squad.
+  function syncOutOptions(team, state) {
+    var prev = outSel.value;
+    var ordered = [];
+    ['GKP', 'DEF', 'MID', 'FWD'].forEach(function (pos) {
+      team.xi.filter(function (p) { return p.pos === pos; }).forEach(function (p) { ordered.push(p); });
+    });
+    team.bench.forEach(function (p) { ordered.push(p); });
+    outSel.innerHTML = ordered.map(function (p) {
+      return '<option value="' + p.id + '">' + esc(p.name) + ' · ' + p.pos + ' · ' + p.club + ' · sells ' + money(p.sell) + '</option>';
+    }).join('');
+    if (state.ids.indexOf(Number(prev)) !== -1) outSel.value = prev;
+    else if (!state.applied.length && D.start && state.ids.indexOf(D.start.out) !== -1) outSel.value = D.start.out;
+    else {
+      var inP = byId[inSel.value];
+      var samePos = inP && ordered.find(function (p) { return p.pos === inP.pos; });
+      if (samePos) outSel.value = samePos.id;
+    }
+  }
+
+  function renderSquad() {
+    var state = activeState();
+    locked = state.applied;
+    document.getElementById('hdr-bank').textContent = money(state.bank);
+    var bar = document.getElementById('locked-bar');
+    if (state.applied.length) {
+      var names = state.applied.map(function (pr) { return byId[pr[0]].name + ' → ' + byId[pr[1]].name; }).join(', ');
+      document.getElementById('locked-text').textContent = 'Locked in: ' + names + ' (Team sheet, armband and bank updated)';
+      bar.style.display = 'flex';
+    } else {
+      bar.style.display = 'none';
+    }
+    var team = bestEleven(state.squad);
+    var order = team.xi.slice().sort(function (a, b) { return b.capScore - a.capScore || b.xNext - a.xNext; });
+    renderArmband(order);
+    renderPitch(team, order[0], order[1]);
+    syncOutOptions(team, state);
+    var curKey = JSON.stringify(state.applied);
+    document.querySelectorAll('[data-lock]').forEach(function (btn) {
+      var isSame = btn.getAttribute('data-lock') === curKey;
+      btn.textContent = isSame ? 'Locked in ✓' : btn.getAttribute('data-label');
+    });
+    update();
+  }
+
   function row(p, tag) {
     var cells = p.weeks.map(function (w) {
       if (!w.length) return '<td class="cell blank">Blank</td>';
@@ -1198,24 +1346,52 @@ const COMPARE_SCRIPT = `
       '<td class="num strong">' + p.next + '</td><td class="num big">' + p.horizon.toFixed(1) + '</td></tr>';
   }
   function update() {
+    var state = activeState();
     var o = byId[outSel.value], i = byId[inSel.value];
     if (!o || !i) return;
-    var diff = i.horizon - o.horizon, left = D.bank + o.sell - i.cost;
+    var diff = i.horizon - o.horizon, left = state.bank + o.sell - i.cost;
     document.getElementById('cmp-rows').innerHTML = row(o, 'OUT') + row(i, 'IN');
     var d = document.getElementById('cmp-diff'); d.textContent = (diff >= 0 ? '+' : '−') + Math.abs(diff).toFixed(1); d.className = 'fig ' + (diff >= 0 ? 'pos' : 'neg');
     var b = document.getElementById('cmp-bank'); b.textContent = left >= 0 ? money(left) : 'Short ' + money(-left); b.className = 'fig ' + (left >= 0 ? '' : 'neg');
     var warn = [];
+    var inActiveSquad = state.ids.indexOf(i.id) !== -1;
     if (o.pos !== i.pos) warn.push('Different positions (' + o.pos + ' out, ' + i.pos + ' in): FPL only allows like-for-like swaps.');
-    if (i.squad) warn.push(i.name + ' is already in your squad.');
-    var sameClub = D.players.filter(function (p) { return p.squad && p.team === i.team && p.id !== o.id; }).length;
-    if (!i.squad && sameClub >= D.teamLimit) warn.push('You already have ' + D.teamLimit + ' ' + i.club + ' players.');
+    if (inActiveSquad) warn.push(i.name + ' is already in your squad.');
+    var sameClub = state.squad.filter(function (p) { return p.team === i.team && p.id !== o.id; }).length;
+    if (!inActiveSquad && sameClub >= D.teamLimit) warn.push('You already have ' + D.teamLimit + ' ' + i.club + ' players.');
     document.getElementById('cmp-warn').textContent = warn.join(' ');
+    if (lockCmpBtn) lockCmpBtn.disabled = warn.length > 0 || left < 0;
   }
+
   outSel.addEventListener('change', update); inSel.addEventListener('change', update);
   document.querySelectorAll('[data-out]').forEach(function (btn) { btn.addEventListener('click', function () { outSel.value = btn.getAttribute('data-out'); update(); document.getElementById('compare').scrollIntoView({ behavior: 'smooth' }); }); });
   document.querySelectorAll('[data-in]').forEach(function (btn) { btn.addEventListener('click', function () { inSel.value = btn.getAttribute('data-in'); update(); document.getElementById('compare').scrollIntoView({ behavior: 'smooth' }); }); });
+  document.querySelectorAll('[data-lock]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      locked = JSON.parse(btn.getAttribute('data-lock'));
+      saveLocked();
+      renderSquad();
+      document.getElementById('locked-bar').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  });
+  if (lockCmpBtn) {
+    lockCmpBtn.addEventListener('click', function () {
+      var o = byId[outSel.value], i = byId[inSel.value];
+      if (!o || !i || lockCmpBtn.disabled) return;
+      locked.push([o.id, i.id]);
+      saveLocked();
+      renderSquad();
+      document.getElementById('t-week').checked = true;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+  document.getElementById('reset-locked').addEventListener('click', function () {
+    locked = [];
+    saveLocked();
+    renderSquad();
+  });
   if (D.start) { outSel.value = D.start.out; inSel.value = D.start.inn; }
-  update();
+  if (locked.length) renderSquad(); else update();
 })();`;
 
 function renderHtml(m) {
@@ -1332,7 +1508,9 @@ th:first-child{position:sticky;left:0;z-index:1;background:#FFF}.who small{color
 .tag{font-size:11px;font-weight:700;color:#FFF;padding:2px 6px}.tag.out{background:#8A1A0E}.tag.in{background:#0B6E4F}
 .grid{background:#FFF;border:2px solid #0B1F4D;padding:10px}
 .grouprow td{padding:14px 6px 4px;font-family:Anton,Impact,sans-serif;font-size:18px;text-transform:uppercase}
-.btn{font:600 12px Inter,system-ui,sans-serif;min-height:44px;padding:0 10px;background:transparent;color:#0B1F4D;border:1px solid #0B1F4D;cursor:pointer}.btn.dark{background:#0B1F4D;color:#FFF}
+.btn{font:600 12px Inter,system-ui,sans-serif;min-height:44px;padding:0 10px;background:transparent;color:#0B1F4D;border:1px solid #0B1F4D;cursor:pointer}.btn.dark{background:#0B1F4D;color:#FFF}.btn:disabled{opacity:.4;cursor:not-allowed}
+.lock-btn{margin-top:8px;padding:0 16px;font-size:14px}
+.locked-bar{border-color:#0B6E4F;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .legend{display:flex;align-items:center;gap:6px;font-size:12px;color:#4A5878}.legend i{width:22px;height:14px;display:inline-block}
 .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.strong{font-weight:700}.big{font-family:Anton,Impact,sans-serif;font-size:20px}
 .note{color:#8A1A0E;font-size:12px}.warn{color:#8A1A0E;font-weight:700}.pens{border:1px solid #4A5878;color:#4A5878;font-size:11px;padding:0 4px}
@@ -1362,18 +1540,19 @@ ul.how{margin:6px 0;padding-left:20px}footer{font-size:13px;line-height:1.6;colo
 
     '<header><div class="wrap"><div class="top"><div><p class="kick">Matchday notes · Team ' + e.id + '</p><h1 class="disp">' + esc(e.name) + '</h1></div>' +
     '<div><p class="gw disp">GW' + ctx.next.id + '</p><p class="dl">Deadline ' + when(ctx.next.deadline_time) + '</p></div></div>' +
-    '<div class="stats"><div><span>Bank</span><b>' + money(ctx.bank) + '</b></div><div><span>Free transfers</span><b>' + ctx.freeTransfers + '</b><small>' + ftNote + '</small></div>' +
+    '<div class="stats"><div><span>Bank</span><b id="hdr-bank">' + money(ctx.bank) + '</b></div><div><span>Free transfers</span><b>' + ctx.freeTransfers + '</b><small>' + ftNote + '</small></div>' +
     '<div><span>Points</span><b>' + e.summary_overall_points + '</b></div><div><span>Rank</span><b>' + Number(e.summary_overall_rank).toLocaleString('en-GB') + '</b></div></div>' +
     '<nav class="tabs" aria-label="Sections"><label for="t-week">This week</label><label for="t-fix">Fixtures &amp; targets</label><label for="t-how">How it works</label></nav></div></header>' +
 
     '<main class="wrap">' +
     // ---- This week
     '<div class="panel p-week">' + warnings.map((w) => '<div class="alert">' + esc(w) + '</div>').join('') +
+    '<div class="alert locked-bar" id="locked-bar" style="display:none"><span id="locked-text"></span><button type="button" class="btn" id="reset-locked">Reset squad</button></div>' +
     '<section class="row2">' + armband(m) +
     '<div class="xfer"><div class="views">' + viewButtons + VIEW_KEYS.map((k) => transferView(m, k)).join('') + '</div>' +
     '<label for="t-fix" class="btn dark" style="display:inline-flex;align-items:center;align-self:flex-start;font-size:14px;padding:0 16px">Compare on the fixture grid</label></div></section>' +
-    '<section style="display:flex;flex-direction:column;gap:14px"><div class="sect"><h2>Team sheet · ' + formation + '</h2><p>Projected points next gameweek</p></div>' +
-    '<div class="pitch">' + line('FWD') + line('MID') + line('DEF') + line('GKP') + '<div class="benchrow-p"><span class="lbl">Bench</span>' + bench + '</div></div></section></div>' +
+    '<section style="display:flex;flex-direction:column;gap:14px"><div class="sect"><h2 id="sheet-head">Team sheet · ' + formation + '</h2><p>Projected points next gameweek</p></div>' +
+    '<div class="pitch" id="pitch-box">' + line('FWD') + line('MID') + line('DEF') + line('GKP') + '<div class="benchrow-p"><span class="lbl">Bench</span>' + bench + '</div></div></section></div>' +
 
     // ---- Fixtures & targets
     '<div class="panel p-fix">' +
@@ -1381,7 +1560,8 @@ ul.how{margin:6px 0;padding-left:20px}footer{font-size:13px;line-height:1.6;colo
     '<label>Swap out<select id="cmp-out">' + squadOrder.map((p) => option(p, true)).join('') + '</select></label>' +
     '<label>Bring in<select id="cmp-in">' + targetOptions + '</select></label>' +
     '<div style="display:flex;gap:24px"><div style="display:flex;flex-direction:column"><span class="figlab">5-GW difference</span><span id="cmp-diff" class="fig">–</span></div>' +
-    '<div style="display:flex;flex-direction:column"><span class="figlab">Bank after</span><span id="cmp-bank" class="fig">–</span></div></div></div>' +
+    '<div style="display:flex;flex-direction:column"><span class="figlab">Bank after</span><span id="cmp-bank" class="fig">–</span></div></div>' +
+    '<button type="button" class="btn dark" id="cmp-lock" style="font-size:14px;padding:0 16px">Lock in this transfer</button></div>' +
     '<p id="cmp-warn"></p><div class="scroll"><table><thead><tr><th>Player</th>' + gwHeads + '<th class="num">Next</th><th class="num">5 GW</th></tr></thead><tbody id="cmp-rows"></tbody></table></div>' +
     '<p class="small" style="margin:0;color:#4A5878">"Bring in" lists every regular starter you could buy (' + m.candidates.length + ' players), best projection first. The difference compares the two players\' own projections; the recommended moves on the first tab also count bench and captaincy effects.</p></section>' +
     '<section style="display:flex;flex-direction:column;gap:12px"><div class="sect"><h2>The fixture grid</h2><div class="legend"><span>Harder</span><i style="background:#A84A0C"></i><i style="background:#F2B27A"></i><i style="background:#E6E1D4"></i><i style="background:#9CC3E6"></i><i style="background:#1D4E89"></i><span>Easier</span></div></div>' +
